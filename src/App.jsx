@@ -223,47 +223,71 @@ menus配列には必ず3〜5品を含めてください。`;
       let text = "";
       let stopReason = null;
       let messageStopReceived = false;
+      let chunkCount = 0;
+      let totalBytes = 0;
 
-      const processLine = (line) => {
-        const trimmed = line.trim();
-        if (!trimmed.startsWith("data:")) return;
-        const jsonStr = trimmed.slice(5).trim();
-        if (!jsonStr || jsonStr === "[DONE]") return;
-        try {
-          const evt = JSON.parse(jsonStr);
-          // テキスト受信
-          if (evt.type === "content_block_delta" && evt.delta?.type === "text_delta" && evt.delta?.text) {
-            text += evt.delta.text;
-          }
-          // stop_reason取得
-          if (evt.type === "message_delta" && evt.delta?.stop_reason) {
-            stopReason = evt.delta.stop_reason;
-          }
-          // message_stop確認
-          if (evt.type === "message_stop") {
-            messageStopReceived = true;
-          }
-        } catch { /* 不完全チャンクは無視 */ }
+      // SSEイベント（\n\n区切り）を処理する関数
+      // AnthropicのSSEは event:\n data:\n\n の形式
+      const processEvent = (eventBlock) => {
+        const lines = eventBlock.split("\n");
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed.startsWith("data:")) continue;
+          const jsonStr = trimmed.slice(5).trim();
+          if (!jsonStr || jsonStr === "[DONE]") continue;
+          try {
+            const evt = JSON.parse(jsonStr);
+            if (evt.type === "content_block_delta" && evt.delta?.type === "text_delta" && evt.delta?.text) {
+              text += evt.delta.text;
+            }
+            if (evt.type === "message_delta" && evt.delta?.stop_reason) {
+              stopReason = evt.delta.stop_reason;
+            }
+            if (evt.type === "message_stop") {
+              messageStopReceived = true;
+            }
+          } catch { /* 不完全なJSONは無視 */ }
+        }
       };
 
       while (true) {
         const { done, value } = await reader.read();
+
         if (done) {
-          // ストリーム終了時にbuffer残存分も処理（取りこぼし防止）
-          if (buffer.trim()) processLine(buffer);
+          // [LOG 6] done:true になったタイミング
+          console.log("[App] reader.read() done:true");
+          // [LOG 7] ループ終了時のbuffer内容
+          console.log("[App] buffer at done (length):", buffer.length, "| content:", buffer.slice(0, 100));
+          // buffer残存分を処理（取りこぼし防止）
+          if (buffer.trim()) processEvent(buffer);
           break;
         }
+
+        chunkCount++;
+        totalBytes += value.byteLength;
+        // [LOG 1,2] chunk数・総byte数
+        console.log(`[App] chunk #${chunkCount}, bytes: ${value.byteLength}, totalBytes: ${totalBytes}`);
+
         buffer += decoder.decode(value, { stream: true });
-        // 行単位で処理（不完全な最終行は次のchunkへ持ち越し）
-        const lines = buffer.split("\n");
-        buffer = lines.pop();
-        for (const line of lines) processLine(line);
+
+        // \n\n 単位でSSEイベントを分割（SSE仕様準拠）
+        const events = buffer.split("\n\n");
+        // 最後の不完全なイベントは次のchunkへ持ち越し
+        buffer = events.pop();
+        for (const eventBlock of events) {
+          if (eventBlock.trim()) processEvent(eventBlock);
+        }
       }
 
-      // デバッグログ
-      console.log("[VeganMenuAI] stop_reason:", stopReason);
-      console.log("[VeganMenuAI] text.length:", text.length);
-      console.log("[VeganMenuAI] message_stop received:", messageStopReceived);
+      // [LOG 3] 受信テキスト総文字数
+      console.log("[App] content_block_delta text total length:", text.length);
+      // [LOG 4] stop_reason
+      console.log("[App] stop_reason:", stopReason);
+      // [LOG 5] message_stop受信
+      console.log("[App] message_stop received:", messageStopReceived);
+      // [LOG 8] JSON.parse直前のtext.length
+      console.log("[App] text.length before JSON.parse:", text.length);
+      console.log("[App] text preview (first 300):", text.slice(0, 300));
 
       if (!text) throw new Error("AIからの応答が空でした");
 
