@@ -254,17 +254,35 @@ ${menuContent}
 
       if (!text) throw new Error("AIからの応答が空でした");
 
-      // Fix④: より堅牢なJSONパース（ネストした文字列も安全に処理）
+      // JSON抽出・サニタイズ・パース
       const cleaned = text.replace(/```json\n?|```\n?/g, "").trim();
       const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
       if (!jsonMatch) throw new Error("JSONが見つかりません: " + cleaned.slice(0, 200));
 
-      // 文字列値内の改行・制御文字を除去（配列内も含む）
-      const sanitized = jsonMatch[0]
-        .replace(/[\u0000-\u001F\u007F]/g, " ")  // 制御文字
-        .replace(/\r?\n/g, " ");                  // 改行
+      // JSON文字列値内の不正文字を安全に除去する関数
+      const sanitizeJson = (str) => {
+        // JSON文字列リテラル内の制御文字・生改行だけを置換（キー外は触らない）
+        return str.replace(/"((?:[^"\\]|\\.)*)"/g, (match, inner) => {
+          const fixed = inner
+            .replace(/\n/g, " ")
+            .replace(/\r/g, "")
+            .replace(/\t/g, " ")
+            .replace(/[\u0000-\u001F\u007F]/g, " ");
+          return `"${fixed}"`;
+        });
+      };
 
-      const parsed = JSON.parse(sanitized);
+      let parsed;
+      try {
+        parsed = JSON.parse(sanitizeJson(jsonMatch[0]));
+      } catch {
+        // サニタイズしても失敗した場合は強制的に全制御文字を除去してリトライ
+        const fallback = jsonMatch[0]
+          .replace(/[\u0000-\u001F\u007F]/g, " ")
+          .replace(/\r?\n/g, " ");
+        parsed = JSON.parse(fallback);
+      }
+
       if (!parsed.menus || !Array.isArray(parsed.menus)) {
         throw new Error("レスポンスの形式が正しくありません");
       }
