@@ -198,7 +198,7 @@ ${menuContent}
 
 {"menus":[{"name":"メニュー名","concept":"コンセプト2〜3文","ingredients":["食材1","食材2","食材3"],"recipe":["手順1","手順2","手順3","手順4"],"price":"推奨価格","veganPoint":"ヴィーガン対応ポイント"}]}
 
-3〜5品提案してください。`;
+menus配列には必ず3〜5品を含めてください。`;
 
     try {
       // ストリーミングリクエスト（Netlify Function経由）

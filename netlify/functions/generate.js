@@ -3,8 +3,6 @@ const MENU_SCHEMA = {
   properties: {
     menus: {
       type: "array",
-      minItems: 3,
-      maxItems: 5,
       items: {
         type: "object",
         properties: {
