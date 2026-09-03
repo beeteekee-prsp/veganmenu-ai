@@ -201,6 +201,7 @@ ${menuContent}
 3〜5品提案してください。`;
 
     try {
+      // ストリーミングリクエスト（Netlify Function経由）
       const res = await fetch("/api/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -214,10 +215,43 @@ ${menuContent}
         const t = await res.text();
         throw new Error(`APIエラー(${res.status}): ${t.slice(0, 200)}`);
       }
-      const d = await res.json();
-      if (d.error) throw new Error("APIエラー: " + JSON.stringify(d.error));
 
-      const text = d.content?.find(c => c.type === "text")?.text || "";
+      // SSEをgetReader()で逐次読み取り
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let text = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+
+        // バッファを行単位で処理（不完全な行は次のchunkへ持ち越し）
+        const lines = buffer.split("\n");
+        buffer = lines.pop(); // 最後の不完全な行を保持
+
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed.startsWith("data:")) continue;
+          const jsonStr = trimmed.slice(5).trim();
+          if (!jsonStr || jsonStr === "[DONE]") continue;
+          try {
+            const parsed = JSON.parse(jsonStr);
+            // content_block_delta の text_delta のみ取得
+            if (
+              parsed.type === "content_block_delta" &&
+              parsed.delta?.type === "text_delta" &&
+              parsed.delta?.text
+            ) {
+              text += parsed.delta.text;
+            }
+          } catch {
+            // JSON.parse失敗は無視（不完全なチャンクの可能性）
+          }
+        }
+      }
+
       if (!text) throw new Error("AIからの応答が空でした");
 
       // Fix④: より堅牢なJSONパース（ネストした文字列も安全に処理）
