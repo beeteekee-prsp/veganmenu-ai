@@ -207,7 +207,7 @@ menus配列には必ず3〜5品を含めてください。`;
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           model: "claude-sonnet-4-6",
-          max_tokens: 3000,
+          max_tokens: 6000,
           messages: [{ role: "user", content: prompt }]
         })
       });
@@ -221,6 +221,8 @@ menus配列には必ず3〜5品を含めてください。`;
       const decoder = new TextDecoder();
       let buffer = "";
       let text = "";
+      let stopReason = null;
+      let messageStopReceived = false;
 
       const processLine = (line) => {
         const trimmed = line.trim();
@@ -229,8 +231,17 @@ menus配列には必ず3〜5品を含めてください。`;
         if (!jsonStr || jsonStr === "[DONE]") return;
         try {
           const evt = JSON.parse(jsonStr);
+          // テキスト受信
           if (evt.type === "content_block_delta" && evt.delta?.type === "text_delta" && evt.delta?.text) {
             text += evt.delta.text;
+          }
+          // stop_reason取得
+          if (evt.type === "message_delta" && evt.delta?.stop_reason) {
+            stopReason = evt.delta.stop_reason;
+          }
+          // message_stop確認
+          if (evt.type === "message_stop") {
+            messageStopReceived = true;
           }
         } catch { /* 不完全チャンクは無視 */ }
       };
@@ -249,7 +260,25 @@ menus配列には必ず3〜5品を含めてください。`;
         for (const line of lines) processLine(line);
       }
 
+      // デバッグログ
+      console.log("[VeganMenuAI] stop_reason:", stopReason);
+      console.log("[VeganMenuAI] text.length:", text.length);
+      console.log("[VeganMenuAI] message_stop received:", messageStopReceived);
+
       if (!text) throw new Error("AIからの応答が空でした");
+
+      // stop_reasonによるエラーハンドリング
+      if (stopReason === "max_tokens") {
+        throw new Error("AIの回答が長くなりすぎました。もう一度生成してください。（品数を減らすか、食材情報を簡潔にすると改善することがあります）");
+      }
+      if (stopReason === "model_context_window_exceeded") {
+        throw new Error("入力データが多すぎてAIが処理できませんでした。メニュー情報を減らしてもう一度お試しください。");
+      }
+
+      // message_stopを確認してからJSONパース
+      if (!messageStopReceived) {
+        console.warn("[VeganMenuAI] message_stop未受信のままストリーム終了");
+      }
 
       // Structured Outputsで正しいJSONが保証されるのでシンプルにパース
       let parsed;
