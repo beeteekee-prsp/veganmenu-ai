@@ -222,65 +222,41 @@ ${menuContent}
       let buffer = "";
       let text = "";
 
+      const processLine = (line) => {
+        const trimmed = line.trim();
+        if (!trimmed.startsWith("data:")) return;
+        const jsonStr = trimmed.slice(5).trim();
+        if (!jsonStr || jsonStr === "[DONE]") return;
+        try {
+          const evt = JSON.parse(jsonStr);
+          if (evt.type === "content_block_delta" && evt.delta?.type === "text_delta" && evt.delta?.text) {
+            text += evt.delta.text;
+          }
+        } catch { /* 不完全チャンクは無視 */ }
+      };
+
       while (true) {
         const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-
-        // バッファを行単位で処理（不完全な行は次のchunkへ持ち越し）
-        const lines = buffer.split("\n");
-        buffer = lines.pop(); // 最後の不完全な行を保持
-
-        for (const line of lines) {
-          const trimmed = line.trim();
-          if (!trimmed.startsWith("data:")) continue;
-          const jsonStr = trimmed.slice(5).trim();
-          if (!jsonStr || jsonStr === "[DONE]") continue;
-          try {
-            const parsed = JSON.parse(jsonStr);
-            // content_block_delta の text_delta のみ取得
-            if (
-              parsed.type === "content_block_delta" &&
-              parsed.delta?.type === "text_delta" &&
-              parsed.delta?.text
-            ) {
-              text += parsed.delta.text;
-            }
-          } catch {
-            // JSON.parse失敗は無視（不完全なチャンクの可能性）
-          }
+        if (done) {
+          // ストリーム終了時にbuffer残存分も処理（取りこぼし防止）
+          if (buffer.trim()) processLine(buffer);
+          break;
         }
+        buffer += decoder.decode(value, { stream: true });
+        // 行単位で処理（不完全な最終行は次のchunkへ持ち越し）
+        const lines = buffer.split("\n");
+        buffer = lines.pop();
+        for (const line of lines) processLine(line);
       }
 
       if (!text) throw new Error("AIからの応答が空でした");
 
-      // JSON抽出・サニタイズ・パース
-      const cleaned = text.replace(/```json\n?|```\n?/g, "").trim();
-      const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
-      if (!jsonMatch) throw new Error("JSONが見つかりません: " + cleaned.slice(0, 200));
-
-      // JSON文字列値内の不正文字を安全に除去する関数
-      const sanitizeJson = (str) => {
-        // JSON文字列リテラル内の制御文字・生改行だけを置換（キー外は触らない）
-        return str.replace(/"((?:[^"\\]|\\.)*)"/g, (match, inner) => {
-          const fixed = inner
-            .replace(/\n/g, " ")
-            .replace(/\r/g, "")
-            .replace(/\t/g, " ")
-            .replace(/[\u0000-\u001F\u007F]/g, " ");
-          return `"${fixed}"`;
-        });
-      };
-
+      // Structured Outputsで正しいJSONが保証されるのでシンプルにパース
       let parsed;
       try {
-        parsed = JSON.parse(sanitizeJson(jsonMatch[0]));
-      } catch {
-        // サニタイズしても失敗した場合は強制的に全制御文字を除去してリトライ
-        const fallback = jsonMatch[0]
-          .replace(/[\u0000-\u001F\u007F]/g, " ")
-          .replace(/\r?\n/g, " ");
-        parsed = JSON.parse(fallback);
+        parsed = JSON.parse(text);
+      } catch (e) {
+        throw new Error("JSONパース失敗: " + e.message + " / 受信冒頭: " + text.slice(0, 200));
       }
 
       if (!parsed.menus || !Array.isArray(parsed.menus)) {
