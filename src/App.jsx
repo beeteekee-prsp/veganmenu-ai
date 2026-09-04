@@ -202,7 +202,7 @@ menus配列には必ず3〜5品を含めてください。`;
 
     try {
       // ストリーミングリクエスト（Netlify Function経由）
-      const res = await fetch("/api/generate", {
+      const res = await fetch(`${import.meta.env.VITE_API_URL ?? ""}/api/generate`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
